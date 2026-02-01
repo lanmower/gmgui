@@ -1,266 +1,174 @@
 import { spawn } from 'child_process';
-import { EventEmitter } from 'events';
+import fs from 'fs';
 
-export class ACPLauncher extends EventEmitter {
+export default class ACPConnection {
   constructor() {
-    super();
-    this.process = null;
-    this.sessionMap = new Map();
-    this.inputBuffer = [];
-    this.isProcessing = false;
+    this.child = null;
+    this.buffer = '';
+    this.nextRequestId = 1;
+    this.pendingRequests = new Map();
+    this.sessionId = null;
+    this.onUpdate = null;
   }
 
-  async launch(agentPath = 'claude-code-acp', agent = 'claude-code') {
-    return new Promise((resolve, reject) => {
-      try {
-        const command = agent === 'opencode' ? 'opencode acp' : agentPath;
-        console.log(`Launching ACP agent: ${command}`);
+  async connect(agentType, cwd) {
+    const env = { ...process.env };
+    delete env.NODE_OPTIONS;
+    delete env.NODE_INSPECT;
+    delete env.NODE_DEBUG;
 
-        const args = agent === 'opencode' ? [] : [];
-        const stdio = agent === 'opencode' ? ['pipe', 'pipe', 'inherit'] : ['pipe', 'pipe', 'inherit'];
+    if (agentType === 'opencode') {
+      this.child = spawn('opencode', ['acp'], { cwd, stdio: ['pipe', 'pipe', 'pipe'], env, shell: false });
+    } else {
+      this.child = spawn('claude-code-acp', [], { cwd, stdio: ['pipe', 'pipe', 'pipe'], env, shell: false });
+    }
 
-        try {
-          const env = {
-            ...process.env,
-            CLAUDE: process.env.CLAUDE || `${process.env.HOME || '/config'}/.claude`,
-          };
-          this.process = agent === 'opencode'
-            ? spawn('opencode', ['acp'], {
-                stdio,
-                env,
-              })
-            : spawn(agentPath, args, {
-                stdio,
-                env,
-              });
-        } catch (spawnErr) {
-          console.error(`Failed to spawn ACP process: ${spawnErr.message}`);
-          reject(new Error(`Failed to spawn ACP agent: ${spawnErr.message}`));
-          return;
-        }
-
-        if (!this.process) {
-          reject(new Error('Process creation returned null'));
-          return;
-        }
-
-        this.process.on('error', (err) => {
-          console.error('ACP process error:', err);
-          this.emit('error', err);
-          reject(err);
-        });
-
-        this.process.on('exit', (code, signal) => {
-          console.log(`ACP process exited with code ${code} signal ${signal}`);
-          this.process = null;
-          this.emit('exit', { code, signal });
-        });
-
-        if (this.process.stdout) {
-          this.process.stdout.setEncoding('utf8');
-          this.process.stdout.on('data', (data) => {
-            this.handleOutput(data);
-          });
-        }
-
-        if (this.process.stderr) {
-          this.process.stderr.on('data', (data) => {
-            console.error('ACP stderr:', data.toString());
-          });
-        }
-
-        setTimeout(() => resolve(), 500);
-      } catch (err) {
-        console.error('Launch error:', err);
-        reject(err);
+    this.child.stderr.on('data', d => console.error(`[ACP:${agentType}:stderr]`, d.toString().trim()));
+    this.child.on('error', err => console.error(`[ACP:${agentType}:error]`, err.message));
+    this.child.on('exit', (code, signal) => {
+      console.log(`[ACP:${agentType}] exited code=${code} signal=${signal}`);
+      this.child = null;
+      for (const [id, req] of this.pendingRequests) {
+        req.reject(new Error('ACP process exited'));
+        clearTimeout(req.timeoutId);
       }
+      this.pendingRequests.clear();
+    });
+
+    this.child.stdout.setEncoding('utf8');
+    this.child.stdout.on('data', data => {
+      this.buffer += data;
+      const lines = this.buffer.split('\n');
+      this.buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          this.handleMessage(JSON.parse(line));
+        } catch (e) {
+          console.error('[ACP:parse]', line.substring(0, 200), e.message);
+        }
+      }
+    });
+
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  handleMessage(msg) {
+    if (msg.method) {
+      this.handleIncoming(msg);
+      return;
+    }
+    if (msg.id !== undefined && this.pendingRequests.has(msg.id)) {
+      const req = this.pendingRequests.get(msg.id);
+      this.pendingRequests.delete(msg.id);
+      clearTimeout(req.timeoutId);
+      if (msg.error) {
+        req.reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+      } else {
+        req.resolve(msg.result);
+      }
+    }
+  }
+
+  handleIncoming(msg) {
+    if (msg.method === 'session/update' && msg.params) {
+      if (this.onUpdate) this.onUpdate(msg.params);
+      this.resetPromptTimeout();
+      return;
+    }
+    if (msg.method === 'session/request_permission' && msg.id !== undefined) {
+      this.sendResponse(msg.id, { outcome: { outcome: 'selected', optionId: 'allow' } });
+      this.resetPromptTimeout();
+      return;
+    }
+    if (msg.method === 'fs/read_text_file' && msg.id !== undefined) {
+      const filePath = msg.params?.path;
+      try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        this.sendResponse(msg.id, { content });
+      } catch (e) {
+        this.sendError(msg.id, -32000, e.message);
+      }
+      return;
+    }
+    if (msg.method === 'fs/write_text_file' && msg.id !== undefined) {
+      const { path: filePath, content } = msg.params || {};
+      try {
+        fs.writeFileSync(filePath, content, 'utf-8');
+        this.sendResponse(msg.id, null);
+      } catch (e) {
+        this.sendError(msg.id, -32000, e.message);
+      }
+      return;
+    }
+  }
+
+  resetPromptTimeout() {
+    for (const [id, req] of this.pendingRequests) {
+      if (req.method === 'session/prompt') {
+        clearTimeout(req.timeoutId);
+        req.timeoutId = setTimeout(() => {
+          this.pendingRequests.delete(id);
+          req.reject(new Error('session/prompt timeout'));
+        }, 300000);
+      }
+    }
+  }
+
+  sendRequest(method, params, timeoutMs = 60000) {
+    return new Promise((resolve, reject) => {
+      if (!this.child) { reject(new Error('ACP not connected')); return; }
+      const id = this.nextRequestId++;
+      const timeoutId = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error(`${method} timeout (${timeoutMs}ms)`));
+      }, timeoutMs);
+      this.pendingRequests.set(id, { resolve, reject, timeoutId, method });
+      this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, ...(params && { params }) }) + '\n');
     });
   }
 
-  handleOutput(data) {
-    const lines = data.split('\n');
-    
-    for (const line of lines) {
-      if (!line.trim()) continue;
+  sendResponse(id, result) {
+    if (!this.child) return;
+    this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+  }
 
-      try {
-        const message = JSON.parse(line);
-        this.emit('message', message);
-      } catch (err) {
-        console.error('Failed to parse ACP message:', line, err);
-      }
-    }
+  sendError(id, code, message) {
+    if (!this.child) return;
+    this.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n');
   }
 
   async initialize() {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('ACP initialize timeout'));
-      }, 15000); // Increased from 5s to 15s for slower systems
-
-      const handleMessage = (msg) => {
-        if (msg.result?.protocolVersion) {
-          clearTimeout(timeout);
-          this.removeListener('message', handleMessage);
-          resolve(msg.result);
-        }
-      };
-
-      this.on('message', handleMessage);
-
-      const initRequest = {
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'initialize',
-        params: {
-          protocolVersion: 1,
-          clientCapabilities: {
-            fs: {},
-            terminal: true,
-          },
-        },
-      };
-
-      this.send(initRequest);
+    return this.sendRequest('initialize', {
+      protocolVersion: 1,
+      clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
     });
   }
 
-  async createSession(cwd, sessionId) {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('ACP session/new timeout (120s)'));
-      }, 120000);
-
-      const handleMessage = (msg) => {
-        // Match by request id (2) and check for sessionId in response
-        // The ACP bridge generates its own sessionId, not the one we pass in
-        if (msg.id === 2 && msg.result?.sessionId) {
-          clearTimeout(timeout);
-          this.removeListener('message', handleMessage);
-          const apcSessionId = msg.result.sessionId;
-          this.sessionMap.set(apcSessionId, { cwd, active: true, clientSessionId: sessionId });
-          resolve(msg.result);
-        }
-      };
-
-      this.on('message', handleMessage);
-
-      const newSessionRequest = {
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'session/new',
-        params: {
-          cwd,
-          mcpServers: [],
-        },
-      };
-
-      this.send(newSessionRequest);
-    });
+  async newSession(cwd) {
+    const result = await this.sendRequest('session/new', { cwd, mcpServers: [] }, 120000);
+    this.sessionId = result.sessionId;
+    return result;
   }
 
-  async sendPrompt(sessionId, messages, systemPrompt = null) {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('ACP session/prompt timeout'));
-      }, 300000);
-
-      const responses = [];
-      const handleMessage = (msg) => {
-        // Collect session updates (streaming notifications)
-        if (msg.method === 'session/update' && msg.params?.sessionId === sessionId) {
-          responses.push(msg.params);
-        }
-
-        // Check for prompt response with stop reason
-        if (msg.id === 3 && msg.result?.stopReason) {
-          clearTimeout(timeout);
-          this.removeListener('message', handleMessage);
-          resolve({
-            stopReason: msg.result.stopReason,
-            updates: responses,
-          });
-        }
-      };
-
-      this.on('message', handleMessage);
-
-      // Convert messages to ACP content blocks (last user message)
-      const lastUserMessage = messages.filter(m => m.role === 'user').pop();
-      const prompt = lastUserMessage ? [
-        {
-          type: 'text',
-          text: typeof lastUserMessage.content === 'string'
-            ? lastUserMessage.content
-            : lastUserMessage.content[0]?.text || ''
-        }
-      ] : [];
-
-      const promptRequest = {
-        jsonrpc: '2.0',
-        id: 3,
-        method: 'session/prompt',
-        params: {
-          sessionId,
-          prompt,
-        },
-      };
-
-      this.send(promptRequest);
-    });
+  async setSessionMode(modeId) {
+    return this.sendRequest('session/set_mode', { sessionId: this.sessionId, modeId });
   }
 
-  send(request) {
-    if (!this.process || !this.process.stdin) {
-      throw new Error('ACP process not running');
-    }
-
-    const line = JSON.stringify(request) + '\n';
-    this.process.stdin.write(line, (err) => {
-      if (err) {
-        console.error('Failed to send ACP request:', err);
-        this.emit('error', err);
-      }
-    });
-  }
-
-  async terminate() {
-    return new Promise((resolve) => {
-      if (!this.process) {
-        resolve();
-        return;
-      }
-
-      const timeout = setTimeout(() => {
-        console.warn('ACP process did not exit gracefully, killing...');
-        this.process?.kill('SIGKILL');
-        resolve();
-      }, 5000);
-
-      this.process.on('exit', () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-
-      this.process.stdin?.end();
-      this.process.kill('SIGTERM');
-    });
+  async sendPrompt(prompt) {
+    const promptContent = Array.isArray(prompt) ? prompt : [{ type: 'text', text: prompt }];
+    return this.sendRequest('session/prompt', { sessionId: this.sessionId, prompt: promptContent }, 300000);
   }
 
   isRunning() {
-    return this.process && !this.process.killed;
+    return this.child && !this.child.killed;
   }
 
-  getSession(sessionId) {
-    return this.sessionMap.get(sessionId);
-  }
-
-  getSessions() {
-    return Array.from(this.sessionMap.entries()).map(([id, data]) => ({
-      sessionId: id,
-      ...data,
-    }));
+  async terminate() {
+    if (!this.child) return;
+    this.child.stdin.end();
+    this.child.kill('SIGTERM');
+    await new Promise(r => { this.child?.on('exit', r); setTimeout(r, 5000); });
+    this.child = null;
   }
 }
-
-export default ACPLauncher;

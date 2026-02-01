@@ -191,6 +191,11 @@ class GMGUIApp {
   }
 
   async deleteConversation(id) {
+    try {
+      await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
+    } catch (e) {
+      console.error('deleteConversation:', e);
+    }
     this.conversations.delete(id);
     if (this.currentConversation === id) {
       this.currentConversation = null;

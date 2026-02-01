@@ -205,6 +205,22 @@ export const queries = {
       .sort((a, b) => a.created_at - b.created_at);
   },
 
+  deleteConversation(id) {
+    if (!dbData.conversations[id]) return false;
+    delete dbData.conversations[id];
+    for (const msgId in dbData.messages) {
+      if (dbData.messages[msgId].conversationId === id) delete dbData.messages[msgId];
+    }
+    for (const sessId in dbData.sessions) {
+      if (dbData.sessions[sessId].conversationId === id) delete dbData.sessions[sessId];
+    }
+    for (const evtId in dbData.events) {
+      if (dbData.events[evtId].conversationId === id) delete dbData.events[evtId];
+    }
+    saveDatabase();
+    return true;
+  },
+
   // Clean up old data
   cleanup() {
     const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
