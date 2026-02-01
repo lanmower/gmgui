@@ -162,13 +162,14 @@ class GMGUIApp {
     localStorage.setItem('gmgui-conversations', JSON.stringify(data));
   }
 
-  startNewChat() {
+  startNewChat(folderPath = null) {
     const id = `chat-${Date.now()}`;
     const conversation = {
       id,
-      title: `Chat ${this.conversations.size + 1}`,
+      title: folderPath ? `Chat in ${folderPath.split('/').pop()}` : `Chat ${this.conversations.size + 1}`,
       messages: [],
       createdAt: new Date().toLocaleString(),
+      folderPath: folderPath || null,
     };
     this.conversations.set(id, conversation);
     this.currentConversation = id;
@@ -193,6 +194,9 @@ class GMGUIApp {
     );
 
     sorted.forEach(conv => {
+      const wrapper = document.createElement('div');
+      wrapper.style.width = '100%';
+      
       const item = document.createElement('button');
       item.className = `chat-item ${this.currentConversation === conv.id ? 'active' : ''}`;
       
@@ -212,7 +216,16 @@ class GMGUIApp {
       item.appendChild(titleSpan);
       item.appendChild(deleteBtn);
       item.onclick = () => this.displayConversation(conv.id);
-      list.appendChild(item);
+      wrapper.appendChild(item);
+
+      if (conv.folderPath) {
+        const folderIndicator = document.createElement('div');
+        folderIndicator.className = 'chat-item-folder';
+        folderIndicator.innerHTML = `<span>📁</span><span>${escapeHtml(conv.folderPath)}</span>`;
+        wrapper.appendChild(folderIndicator);
+      }
+
+      list.appendChild(wrapper);
     });
   }
 
@@ -253,8 +266,18 @@ class GMGUIApp {
     const messagesDiv = document.getElementById('chatMessages');
     if (!messagesDiv) return;
 
+    let headerHtml = '';
+    if (conversation.folderPath) {
+      headerHtml = `
+        <div class="chat-context-header">
+          <span class="folder-icon">📁</span>
+          <span class="folder-context">${escapeHtml(conversation.folderPath)}</span>
+        </div>
+      `;
+    }
+
     if (conversation.messages.length === 0) {
-      messagesDiv.innerHTML = `
+      messagesDiv.innerHTML = headerHtml + `
         <div class="welcome-section">
           <h2>Hi, what's your plan for today?</h2>
           <div class="agent-selection">
@@ -264,7 +287,7 @@ class GMGUIApp {
       `;
       this.renderAgentCards();
     } else {
-      messagesDiv.innerHTML = '';
+      messagesDiv.innerHTML = headerHtml;
       conversation.messages.forEach(msg => {
         this.addMessageToDisplay(msg);
       });
@@ -323,6 +346,13 @@ class GMGUIApp {
         agentId: this.selectedAgent,
         timestamp: Date.now(),
       };
+
+      if (conversation.folderPath) {
+        payload.folderContext = {
+          path: conversation.folderPath,
+          isFolder: true,
+        };
+      }
 
       const response = await fetch(`/api/agents/${this.selectedAgent}`, {
         method: 'POST',
@@ -590,6 +620,50 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function showNewChatModal() {
+  const modal = document.getElementById('newChatModal');
+  if (modal) {
+    modal.classList.add('active');
+  }
+}
+
+function closeNewChatModal() {
+  const modal = document.getElementById('newChatModal');
+  if (modal) {
+    modal.classList.remove('active');
+  }
+}
+
+function createChatInWorkspace() {
+  closeNewChatModal();
+  app.startNewChat();
+}
+
+function createChatInFolder() {
+  closeNewChatModal();
+  document.getElementById('folderPickerInput').click();
+}
+
+function handleFolderPicker() {
+  const input = document.getElementById('folderPickerInput');
+  const files = input.files;
+
+  if (files.length === 0) return;
+
+  try {
+    const folderPath = files[0].webkitRelativePath?.split('/')[0];
+    if (folderPath) {
+      app.startNewChat(folderPath);
+    } else {
+      app.logMessage('system', 'Could not determine folder path');
+    }
+  } catch (error) {
+    app.logMessage('system', `Folder selection error: ${error.message}`);
+  } finally {
+    input.value = '';
+  }
 }
 
 function startNewChat() {

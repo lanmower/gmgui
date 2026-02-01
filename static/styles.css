@@ -232,6 +232,16 @@ html, body {
   font-weight: 500;
 }
 
+.chat-item-folder {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  margin-top: 0.25rem;
+  padding: 0 0.5rem;
+}
+
 .sidebar-footer {
   padding: 0 1.25rem 1.5rem;
   border-top: 1px solid var(--border-color);
@@ -283,6 +293,37 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
+}
+
+.chat-context-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+  flex-shrink: 0;
+}
+
+.chat-context-header .folder-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.chat-context-header .folder-context {
+  word-break: break-all;
+  font-family: 'Monaco', 'Courier New', monospace;
+}
+
+@media (max-width: 768px) {
+  .chat-context-header {
+    padding: 0.75rem;
+    font-size: 0.8rem;
+  }
 }
 
 .welcome-section {
@@ -681,6 +722,57 @@ html, body {
   display: flex;
   gap: 0.75rem;
   justify-content: flex-end;
+}
+
+.chat-option-btn {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+  text-align: left;
+  width: 100%;
+}
+
+.chat-option-btn:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--color-primary);
+}
+
+.chat-option-btn:active {
+  transform: scale(0.98);
+}
+
+.chat-option-icon {
+  font-size: 1.5rem;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.chat-option-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.chat-option-title {
+  font-weight: 500;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+.chat-option-desc {
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
 }
 
 .btn {

@@ -19,7 +19,7 @@
         </button>
       </div>
 
-      <button class="new-chat-btn" onclick="startNewChat()">
+      <button class="new-chat-btn" onclick="showNewChatModal()">
         <span class="icon">+</span> New Chat
       </button>
 
@@ -69,6 +69,7 @@
               </button>
               <input type="file" id="fileInput" style="display: none;" onchange="handleFileUpload()" multiple />
               <input type="file" id="folderInput" style="display: none;" webkitdirectory directory multiple onchange="handleFolderOpen()" />
+              <input type="file" id="folderPickerInput" style="display: none;" webkitdirectory directory onchange="handleFolderPicker()" />
             </div>
           </div>
         </div>
@@ -120,6 +121,32 @@
             <option value="jpg">JPEG</option>
           </select>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal for new chat options -->
+  <div id="newChatModal" class="modal">
+    <div class="modal-content" style="max-width: 400px;">
+      <div class="modal-header">
+        <h3>New Chat</h3>
+        <button onclick="closeNewChatModal()" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body" style="gap: 1rem; flex-direction: column; padding: 2rem;">
+        <button class="chat-option-btn" onclick="createChatInWorkspace()">
+          <span class="chat-option-icon">💬</span>
+          <div class="chat-option-content">
+            <div class="chat-option-title">Chat in this workspace</div>
+            <div class="chat-option-desc">Default chat mode</div>
+          </div>
+        </button>
+        <button class="chat-option-btn" onclick="createChatInFolder()">
+          <span class="chat-option-icon">📁</span>
+          <div class="chat-option-content">
+            <div class="chat-option-title">Chat in folder</div>
+            <div class="chat-option-desc">Contextualize chat to a specific folder</div>
+          </div>
+        </button>
       </div>
     </div>
   </div>
