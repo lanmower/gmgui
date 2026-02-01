@@ -164,9 +164,13 @@ class GMGUIApp {
 
   startNewChat(folderPath = null) {
     const id = `chat-${Date.now()}`;
+    const title = folderPath 
+      ? `📁 ${folderPath.split('/').pop() || folderPath}`
+      : `Chat ${this.conversations.size + 1}`;
+    
     const conversation = {
       id,
-      title: folderPath ? `Chat in ${folderPath.split('/').pop()}` : `Chat ${this.conversations.size + 1}`,
+      title,
       messages: [],
       createdAt: new Date().toLocaleString(),
       folderPath: folderPath || null,
@@ -194,9 +198,6 @@ class GMGUIApp {
     );
 
     sorted.forEach(conv => {
-      const wrapper = document.createElement('div');
-      wrapper.style.width = '100%';
-      
       const item = document.createElement('button');
       item.className = `chat-item ${this.currentConversation === conv.id ? 'active' : ''}`;
       
@@ -210,30 +211,17 @@ class GMGUIApp {
       deleteBtn.title = 'Delete chat';
       deleteBtn.onclick = (e) => {
         e.stopPropagation();
-        this.deleteConversation(conv.id);
+        this.showDeleteConfirmDialog(conv.id);
       };
       
       item.appendChild(titleSpan);
       item.appendChild(deleteBtn);
       item.onclick = () => this.displayConversation(conv.id);
-      wrapper.appendChild(item);
-
-      if (conv.folderPath) {
-        const folderIndicator = document.createElement('div');
-        folderIndicator.className = 'chat-item-folder';
-        folderIndicator.innerHTML = `<span>📁</span><span>${escapeHtml(conv.folderPath)}</span>`;
-        wrapper.appendChild(folderIndicator);
-      }
-
-      list.appendChild(wrapper);
+      list.appendChild(item);
     });
   }
 
-  deleteConversation(id) {
-    this.showDeleteConfirmDialog(id);
-  }
-
-  showDeleteConfirmDialog(id) {
+  showDeleteConfirmDialog(conversationId) {
     const modal = document.getElementById('deleteConfirmModal');
     if (!modal) return;
 
@@ -241,9 +229,10 @@ class GMGUIApp {
     const cancelBtn = modal.querySelector('.btn-cancel');
 
     const handleConfirm = () => {
-      this.conversations.delete(id);
+      this.conversations.delete(conversationId);
       this.saveConversations();
-      if (this.currentConversation === id) {
+      
+      if (this.currentConversation === conversationId) {
         this.currentConversation = null;
         const firstChat = Array.from(this.conversations.values())[0];
         if (firstChat) {
@@ -528,10 +517,6 @@ class GMGUIApp {
     document.getElementById('fileInput').click();
   }
 
-  triggerFolderOpen() {
-    document.getElementById('folderInput').click();
-  }
-
   async handleFileUpload() {
     const input = document.getElementById('fileInput');
     const files = input.files;
@@ -561,43 +546,6 @@ class GMGUIApp {
       }
     } catch (error) {
       this.logMessage('system', `Upload error: ${error.message}`);
-    } finally {
-      this.showLoading(false);
-    }
-  }
-
-  async handleFolderOpen() {
-    const input = document.getElementById('folderInput');
-    const files = input.files;
-
-    if (files.length === 0) return;
-
-    this.showLoading(true);
-
-    try {
-      const formData = new FormData();
-      const folderPath = files[0].webkitRelativePath?.split('/')[0] || 'folder';
-      
-      for (const file of files) {
-        formData.append('files', file);
-      }
-      formData.append('folderPath', folderPath);
-
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        this.logMessage('system', `Opened folder "${folderPath}" with ${data.files.length} file(s)`);
-        input.value = '';
-      } else {
-        const error = await response.json();
-        this.logMessage('system', `Folder open failed: ${error.error}`);
-      }
-    } catch (error) {
-      this.logMessage('system', `Folder error: ${error.message}`);
     } finally {
       this.showLoading(false);
     }
@@ -640,58 +588,6 @@ class GMGUIApp {
     }
   }
 
-  async loadFolderBrowser(path) {
-    try {
-      const response = await fetch(`/api/folders?path=${encodeURIComponent(path)}`);
-      if (response.ok) {
-        const data = await response.json();
-        document.getElementById('currentFolderPath').textContent = data.currentPath;
-
-        const list = document.getElementById('folderBrowserList');
-        list.innerHTML = '';
-
-        if (data.parent) {
-          const parentItem = document.createElement('div');
-          parentItem.style.cssText = 'padding: 0.75rem; border-bottom: 1px solid #e5e7eb; cursor: pointer; display: flex; align-items: center; gap: 0.5rem;';
-          parentItem.innerHTML = '📁 <strong>..</strong>';
-          parentItem.onclick = () => this.loadFolderBrowser(data.parent);
-          list.appendChild(parentItem);
-        }
-
-        data.folders.forEach(folder => {
-          const item = document.createElement('div');
-          item.style.cssText = 'padding: 0.75rem; border-bottom: 1px solid #e5e7eb; cursor: pointer; display: flex; align-items: center; gap: 0.5rem;';
-          item.innerHTML = `📁 ${escapeHtml(folder)}`;
-          item.onmouseover = () => item.style.background = '#f9fafb';
-          item.onmouseout = () => item.style.background = 'white';
-          item.onclick = () => this.loadFolderBrowser(data.currentPath + '/' + folder);
-          list.appendChild(item);
-        });
-      }
-    } catch (error) {
-      console.error('Failed to load folders:', error);
-      document.getElementById('folderBrowserList').innerHTML = '<div style="padding: 1rem; color: red;">Error loading folders</div>';
-    }
-  }
-
-  createChatInFolder(folderPath) {
-    const id = `chat-${Date.now()}`;
-    const folderName = folderPath.split('/').pop() || folderPath;
-    const conversation = {
-      id,
-      title: `📁 ${folderName}`,
-      messages: [],
-      createdAt: new Date().toLocaleString(),
-      folderPath: folderPath,
-    };
-    this.conversations.set(id, conversation);
-    this.currentConversation = id;
-    this.saveConversations();
-    this.renderChatHistory();
-    this.displayConversation(id);
-    this.logMessage('system', `Started chat in folder: ${folderPath}`);
-  }
-
   showFolderSelectionDialog() {
     const modal = document.getElementById('folderSelectionModal');
     if (!modal) return;
@@ -709,7 +605,8 @@ class GMGUIApp {
         this.logMessage('system', 'Please enter a folder path');
         return;
       }
-      this.startNewChat(path);
+      const expandedPath = path.startsWith('~') ? path.replace('~', process.env.HOME || '/root') : path;
+      this.startNewChat(expandedPath);
       this.closeFolderSelectionDialog();
     };
 
@@ -772,10 +669,6 @@ function createChatInFolder() {
   app.showFolderSelectionDialog();
 }
 
-function startNewChat() {
-  app.startNewChat();
-}
-
 function sendMessage() {
   app.sendMessage();
 }
@@ -829,67 +722,5 @@ function handleFileUpload() {
   app.handleFileUpload();
 }
 
-function showNewChatModal() {
-  const modal = document.getElementById('newChatModal');
-  if (modal) {
-    modal.style.display = 'flex';
-  }
-}
-
-function closeNewChatModal() {
-  const modal = document.getElementById('newChatModal');
-  if (modal) {
-    modal.style.display = 'none';
-  }
-}
-
-function createChatInWorkspace() {
-  app.startNewChat();
-}
-
-function openFolderBrowser() {
-  closeNewChatModal();
-  const modal = document.getElementById('folderBrowserModal');
-  if (modal) {
-    modal.style.display = 'flex';
-    app.loadFolderBrowser('/');
-  }
-}
-
-function closeFolderBrowser() {
-  const modal = document.getElementById('folderBrowserModal');
-  if (modal) {
-    modal.style.display = 'none';
-  }
-}
-
-function selectFolderForChat() {
-  const path = document.getElementById('currentFolderPath').textContent;
-  if (path && path !== '/') {
-    app.createChatInFolder(path);
-    closeFolderBrowser();
-  } else {
-    alert('Please select a folder');
-  }
-}
-
 // Initialize app
 const app = new GMGUIApp();
-
-// Hot reload support
-if (typeof window !== 'undefined') {
-  let reloadTimeout;
-  const reloadScript = () => {
-    const script = document.createElement('script');
-    script.src = '/app.js?t=' + Date.now();
-    script.onload = () => {
-      clearTimeout(reloadTimeout);
-      reloadTimeout = setTimeout(reloadScript, 1000);
-    };
-    script.onerror = () => {
-      clearTimeout(reloadTimeout);
-      reloadTimeout = setTimeout(reloadScript, 1000);
-    };
-    document.head.appendChild(script);
-  };
-}
