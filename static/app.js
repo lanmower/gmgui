@@ -4,7 +4,7 @@ class GMGUIApp {
     this.selectedAgent = null;
     this.conversations = new Map();
     this.currentConversation = null;
-    this.polling = new Map();
+    this.activeStream = null;
     this.settings = { autoScroll: true, connectTimeout: 30000 };
     this.init();
   }
@@ -312,7 +312,6 @@ class GMGUIApp {
     this.addMessageToDisplay({ role: 'user', content: message });
     input.value = '';
     this.updateSendButtonState();
-    const processingEl = this.addProcessingIndicator();
     try {
       const folderPath = conv?.folderPath || localStorage.getItem('gmgui-home') || '/config';
       const res = await fetch(`/api/conversations/${this.currentConversation}/messages`, {
@@ -326,18 +325,11 @@ class GMGUIApp {
       });
       if (!res.ok) {
         const err = await res.json();
-        processingEl.remove();
         this.addMessageToDisplay({ role: 'system', content: `Error: ${err.error || 'Request failed'}` });
         return;
       }
-      const data = await res.json();
-      if (data.session) {
-        this.pollSession(data.session.id, this.currentConversation, processingEl);
-      } else {
-        processingEl.remove();
-      }
+      this.streamResponse(this.currentConversation);
     } catch (e) {
-      processingEl.remove();
       this.addMessageToDisplay({ role: 'system', content: `Error: ${e.message}` });
     }
     if (this.settings.autoScroll) {
@@ -346,106 +338,155 @@ class GMGUIApp {
     }
   }
 
-  addProcessingIndicator() {
-    const div = document.getElementById('chatMessages');
-    if (!div) return document.createElement('div');
-    const el = document.createElement('div');
-    el.className = 'message system';
-    const bubble = document.createElement('div');
-    bubble.className = 'message-bubble';
-    bubble.textContent = `Processing with ${this.selectedAgent}...`;
-    el.appendChild(bubble);
-    div.appendChild(el);
-    if (this.settings.autoScroll) div.scrollTop = div.scrollHeight;
-    return el;
-  }
-
   addSystemMessage(text) {
     this.addMessageToDisplay({ role: 'system', content: text });
   }
 
-  async pollSession(sessionId, conversationId, processingEl) {
-    if (this.polling.has(sessionId)) return;
-    this.polling.set(sessionId, true);
-    let attempts = 0;
-    const maxAttempts = 600;
-    const poll = async () => {
-      if (!this.polling.has(sessionId)) return;
-      try {
-        const res = await fetch(`/api/sessions/${sessionId}`);
-        if (!res.ok) {
-          this.polling.delete(sessionId);
-          processingEl.remove();
-          this.addMessageToDisplay({ role: 'system', content: 'Session not found' });
-          return;
+  streamResponse(conversationId) {
+    const div = document.getElementById('chatMessages');
+    if (!div) return;
+
+    const container = document.createElement('div');
+    container.className = 'message assistant';
+    const streamWrap = document.createElement('div');
+    streamWrap.className = 'stream-container';
+    container.appendChild(streamWrap);
+    div.appendChild(container);
+
+    let textBlock = null;
+    let thoughtBlock = null;
+    const toolBlocks = new Map();
+
+    const ensureTextBlock = () => {
+      if (textBlock) return textBlock;
+      textBlock = document.createElement('div');
+      textBlock.className = 'stream-text-block';
+      streamWrap.appendChild(textBlock);
+      return textBlock;
+    };
+
+    const autoScroll = () => {
+      if (this.settings.autoScroll) div.scrollTop = div.scrollHeight;
+    };
+
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${location.host}/stream?conversationId=${conversationId}`);
+    this.activeStream = ws;
+
+    ws.onmessage = (e) => {
+      let event;
+      try { event = JSON.parse(e.data); } catch { return; }
+
+      if (event.type === 'text_delta') {
+        const block = ensureTextBlock();
+        block.textContent += event.text;
+        autoScroll();
+      } else if (event.type === 'thought_delta') {
+        if (!thoughtBlock) {
+          thoughtBlock = this.createThoughtBlock();
+          streamWrap.insertBefore(thoughtBlock, streamWrap.firstChild);
         }
-        const data = await res.json();
-        const session = data.session;
-        if (session.status === 'completed') {
-          this.polling.delete(sessionId);
-          processingEl.remove();
-          const messages = await this.fetchMessages(conversationId);
-          const lastAssistant = messages.filter(m => m.role === 'assistant').pop();
-          if (lastAssistant) {
-            const content = lastAssistant.content;
-            let text = content;
-            try {
-              const parsed = JSON.parse(content);
-              text = this.extractACPResponse(parsed);
-            } catch (_) {}
-            this.addMessageToDisplay({ role: 'assistant', content: text });
-          }
-          if (this.settings.autoScroll) {
-            const div = document.getElementById('chatMessages');
-            if (div) div.scrollTop = div.scrollHeight;
-          }
-          return;
-        }
-        if (session.status === 'error') {
-          this.polling.delete(sessionId);
-          processingEl.remove();
-          this.addMessageToDisplay({ role: 'system', content: `Error: ${session.error || 'Unknown error'}` });
-          return;
-        }
-        attempts++;
-        if (attempts < maxAttempts) {
-          setTimeout(poll, 500);
-        } else {
-          this.polling.delete(sessionId);
-          processingEl.remove();
-          this.addMessageToDisplay({ role: 'system', content: 'Session timed out' });
-        }
-      } catch (e) {
-        attempts++;
-        if (attempts < maxAttempts) {
-          setTimeout(poll, 1000);
-        } else {
-          this.polling.delete(sessionId);
-          processingEl.remove();
-          this.addMessageToDisplay({ role: 'system', content: `Poll error: ${e.message}` });
-        }
+        thoughtBlock.querySelector('.thought-content').textContent += event.text;
+        autoScroll();
+      } else if (event.type === 'tool_call') {
+        textBlock = null;
+        const block = this.createToolBlock(event);
+        toolBlocks.set(event.toolCallId, block);
+        streamWrap.appendChild(block);
+        autoScroll();
+      } else if (event.type === 'tool_update') {
+        const block = toolBlocks.get(event.toolCallId);
+        if (block) this.updateToolBlock(block, event);
+        textBlock = null;
+        autoScroll();
+      } else if (event.type === 'plan') {
+        const planEl = this.createPlanBlock(event.entries);
+        streamWrap.appendChild(planEl);
+        autoScroll();
+      } else if (event.type === 'done') {
+        streamWrap.classList.add('done');
+        ws.close();
+        this.activeStream = null;
+        autoScroll();
+      } else if (event.type === 'error') {
+        const errEl = document.createElement('div');
+        errEl.className = 'stream-error';
+        errEl.textContent = event.message;
+        streamWrap.appendChild(errEl);
+        ws.close();
+        this.activeStream = null;
+        autoScroll();
       }
     };
-    poll();
+
+    ws.onerror = () => { this.activeStream = null; };
+    ws.onclose = () => { this.activeStream = null; };
   }
 
-  extractACPResponse(response) {
-    if (!response) return '';
-    let text = '';
-    if (response.updates && Array.isArray(response.updates)) {
-      for (const update of response.updates) {
-        if (update.textDelta) text += update.textDelta;
-        else if (update.content && typeof update.content === 'string') text += update.content;
-      }
+  createThoughtBlock() {
+    const wrap = document.createElement('div');
+    wrap.className = 'thought-block';
+    const header = document.createElement('div');
+    header.className = 'thought-header';
+    header.textContent = 'Thinking...';
+    header.onclick = () => wrap.classList.toggle('collapsed');
+    const content = document.createElement('div');
+    content.className = 'thought-content';
+    wrap.appendChild(header);
+    wrap.appendChild(content);
+    return wrap;
+  }
+
+  createToolBlock(event) {
+    const wrap = document.createElement('div');
+    wrap.className = `tool-block status-${event.status || 'running'}`;
+    const header = document.createElement('div');
+    header.className = 'tool-header';
+    const kindIcons = { execute: '>', read: '?', edit: '/', search: '~', fetch: '@', write: '/', think: '!', other: '#' };
+    const icon = kindIcons[event.kind] || '#';
+    header.innerHTML = `<span class="tool-icon">${escapeHtml(icon)}</span><span class="tool-title">${escapeHtml(event.title || event.kind || 'tool')}</span><span class="tool-status">${escapeHtml(event.status || 'running')}</span>`;
+    header.onclick = () => wrap.classList.toggle('collapsed');
+    wrap.appendChild(header);
+    if (event.content && event.content.length) {
+      const body = document.createElement('div');
+      body.className = 'tool-body';
+      event.content.forEach(c => {
+        if (c.text) body.textContent += c.text;
+      });
+      wrap.appendChild(body);
     }
-    if (response.stopReason) {
-      if (text) text += `\n\n[Completed: ${response.stopReason}]`;
-      else text = `Operation completed: ${response.stopReason}`;
+    return wrap;
+  }
+
+  updateToolBlock(block, event) {
+    block.className = `tool-block status-${event.status || 'completed'}`;
+    const statusEl = block.querySelector('.tool-status');
+    if (statusEl) statusEl.textContent = event.status || 'completed';
+    if (event.content && event.content.length) {
+      let body = block.querySelector('.tool-body');
+      if (!body) { body = document.createElement('div'); body.className = 'tool-body'; block.appendChild(body); }
+      event.content.forEach(c => {
+        if (c.text) body.textContent += c.text;
+      });
     }
-    if (!text && typeof response === 'object') {
-      text = JSON.stringify(response);
+  }
+
+  createPlanBlock(entries) {
+    const wrap = document.createElement('div');
+    wrap.className = 'plan-block';
+    const header = document.createElement('div');
+    header.className = 'plan-header';
+    header.textContent = 'Plan';
+    wrap.appendChild(header);
+    if (entries && entries.length) {
+      entries.forEach(entry => {
+        const item = document.createElement('div');
+        item.className = 'plan-item';
+        item.textContent = entry.title || entry.description || JSON.stringify(entry);
+        wrap.appendChild(item);
+      });
     }
-    return text.trim();
+    return wrap;
   }
 
   updateSendButtonState() {

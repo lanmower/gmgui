@@ -203,6 +203,7 @@ async function processMessage(conversationId, messageId, sessionId, content, age
   try {
     queries.updateSession(sessionId, { status: 'processing' });
     queries.createEvent('session.processing', {}, conversationId, sessionId);
+    broadcastStream(conversationId, { type: 'status', status: 'processing' });
 
     const cwd = folderContext?.path || '/config';
     const conn = await getACP(agentId || 'claude-code', cwd);
@@ -210,8 +211,19 @@ async function processMessage(conversationId, messageId, sessionId, content, age
     let fullText = '';
     conn.onUpdate = (params) => {
       const u = params.update;
-      if (u?.sessionUpdate === 'agent_message_chunk' && u.content?.text) {
+      if (!u) return;
+      const kind = u.sessionUpdate;
+      if (kind === 'agent_message_chunk' && u.content?.text) {
         fullText += u.content.text;
+        broadcastStream(conversationId, { type: 'text_delta', text: u.content.text });
+      } else if (kind === 'agent_thought_chunk' && u.content?.text) {
+        broadcastStream(conversationId, { type: 'thought_delta', text: u.content.text });
+      } else if (kind === 'tool_call') {
+        broadcastStream(conversationId, { type: 'tool_call', toolCallId: u.toolCallId, title: u.title, kind: u.kind, status: u.status, content: u.content, locations: u.locations });
+      } else if (kind === 'tool_call_update') {
+        broadcastStream(conversationId, { type: 'tool_update', toolCallId: u.toolCallId, title: u.title, status: u.status, content: u.content });
+      } else if (kind === 'plan') {
+        broadcastStream(conversationId, { type: 'plan', entries: u.entries });
       }
     };
 
@@ -222,23 +234,46 @@ async function processMessage(conversationId, messageId, sessionId, content, age
     queries.createMessage(conversationId, 'assistant', responseText);
     queries.updateSession(sessionId, { status: 'completed', response: { text: responseText }, completed_at: Date.now() });
     queries.createEvent('session.completed', {}, conversationId, sessionId);
+    broadcastStream(conversationId, { type: 'done', stopReason: result?.stopReason || 'end_turn' });
   } catch (e) {
     console.error('processMessage error:', e.message);
     queries.createMessage(conversationId, 'assistant', `Error: ${e.message}`);
     queries.updateSession(sessionId, { status: 'error', error: e.message, completed_at: Date.now() });
     queries.createEvent('session.error', { error: e.message }, conversationId, sessionId);
+    broadcastStream(conversationId, { type: 'error', message: e.message });
     acpPool.delete(agentId || 'claude-code');
   }
 }
 
 const wss = new WebSocketServer({ server });
-const clients = [];
+const hotReloadClients = [];
+const streamClients = new Map();
+
 wss.on('connection', (ws, req) => {
-  if (req.url === '/hot-reload') {
-    clients.push(ws);
-    ws.on('close', () => { const i = clients.indexOf(ws); if (i > -1) clients.splice(i, 1); });
+  const url = new URL(req.url, 'http://localhost');
+  if (url.pathname === '/hot-reload') {
+    hotReloadClients.push(ws);
+    ws.on('close', () => { const i = hotReloadClients.indexOf(ws); if (i > -1) hotReloadClients.splice(i, 1); });
+  } else if (url.pathname === '/stream') {
+    const convId = url.searchParams.get('conversationId');
+    if (!convId) { ws.close(); return; }
+    if (!streamClients.has(convId)) streamClients.set(convId, new Set());
+    streamClients.get(convId).add(ws);
+    ws.on('close', () => {
+      const set = streamClients.get(convId);
+      if (set) { set.delete(ws); if (set.size === 0) streamClients.delete(convId); }
+    });
   }
 });
+
+function broadcastStream(conversationId, event) {
+  const set = streamClients.get(conversationId);
+  if (!set) return;
+  const data = JSON.stringify(event);
+  for (const ws of set) {
+    if (ws.readyState === 1) ws.send(data);
+  }
+}
 
 if (watch) {
   const watchedFiles = new Map();
@@ -247,7 +282,7 @@ if (watch) {
       const fp = path.join(staticDir, file);
       if (watchedFiles.has(fp)) return;
       fs.watchFile(fp, { interval: 100 }, (curr, prev) => {
-        if (curr.mtime > prev.mtime) clients.forEach(c => { if (c.readyState === 1) c.send(JSON.stringify({ type: 'reload' })); });
+        if (curr.mtime > prev.mtime) hotReloadClients.forEach(c => { if (c.readyState === 1) c.send(JSON.stringify({ type: 'reload' })); });
       });
       watchedFiles.set(fp, true);
     });
