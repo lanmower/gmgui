@@ -128,8 +128,8 @@ export class ACPLauncher extends EventEmitter {
   async createSession(cwd, sessionId) {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('ACP session/new timeout'));
-      }, 30000);
+        reject(new Error('ACP session/new timeout (120s)'));
+      }, 120000);
 
       const handleMessage = (msg) => {
         if (msg.result?.sessionId === sessionId) {
