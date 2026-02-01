@@ -441,6 +441,45 @@ class GMGUIApp {
     this.renderAgentCards();
   }
 
+  parseAndRenderContent(content) {
+    const elements = [];
+    if (typeof content === 'string') {
+      const htmlCodeBlockRegex = /```html\n([\s\S]*?)\n```/g;
+      let lastIndex = 0;
+      let match;
+
+      while ((match = htmlCodeBlockRegex.exec(content)) !== null) {
+        if (match.index > lastIndex) {
+          const textBefore = content.substring(lastIndex, match.index);
+          if (textBefore.trim()) {
+            const bubble = document.createElement('div');
+            bubble.className = 'message-bubble';
+            bubble.textContent = textBefore;
+            elements.push(bubble);
+          }
+        }
+
+        const htmlContent = match[1];
+        const htmlEl = this.createHtmlBlock({ html: htmlContent });
+        elements.push(htmlEl);
+        lastIndex = htmlCodeBlockRegex.lastIndex;
+      }
+
+      if (lastIndex < content.length) {
+        const textAfter = content.substring(lastIndex);
+        if (textAfter.trim()) {
+          const bubble = document.createElement('div');
+          bubble.className = 'message-bubble';
+          bubble.textContent = textAfter;
+          elements.push(bubble);
+        }
+      }
+
+      return elements.length > 0 ? elements : null;
+    }
+    return null;
+  }
+
   addMessageToDisplay(msg) {
     const div = document.getElementById('chatMessages');
     if (!div) return;
@@ -448,16 +487,26 @@ class GMGUIApp {
     el.className = `message ${msg.role}`;
 
     if (typeof msg.content === 'string') {
-      const bubble = document.createElement('div');
-      bubble.className = 'message-bubble';
-      bubble.textContent = msg.content;
-      el.appendChild(bubble);
-    } else if (typeof msg.content === 'object' && msg.content !== null) {
-      if (msg.content.text) {
+      const parsed = this.parseAndRenderContent(msg.content);
+      if (parsed) {
+        parsed.forEach(elem => el.appendChild(elem));
+      } else {
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble';
-        bubble.textContent = msg.content.text;
+        bubble.textContent = msg.content;
         el.appendChild(bubble);
+      }
+    } else if (typeof msg.content === 'object' && msg.content !== null) {
+      if (msg.content.text) {
+        const parsed = this.parseAndRenderContent(msg.content.text);
+        if (parsed) {
+          parsed.forEach(elem => el.appendChild(elem));
+        } else {
+          const bubble = document.createElement('div');
+          bubble.className = 'message-bubble';
+          bubble.textContent = msg.content.text;
+          el.appendChild(bubble);
+        }
       }
       if (msg.content.blocks && Array.isArray(msg.content.blocks)) {
         msg.content.blocks.forEach(block => {
