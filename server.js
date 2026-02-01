@@ -292,7 +292,6 @@ async function processMessage(conversationId, messageId, sessionId, content, age
     queries.updateSession(sessionId, { status: 'processing' });
     queries.createEvent('session.processing', { sessionId }, conversationId, sessionId);
     broadcastSync({ type: 'session_updated', sessionId, status: 'processing' });
-    broadcastStream(conversationId, { type: 'status', status: 'processing' });
 
     const cwd = folderContext?.path || '/config';
     const conn = await getACP(agentId || 'claude-code', cwd);
@@ -305,22 +304,11 @@ async function processMessage(conversationId, messageId, sessionId, content, age
       const kind = u.sessionUpdate;
       if (kind === 'agent_message_chunk' && u.content?.text) {
         fullText += u.content.text;
-        broadcastStream(conversationId, { type: 'text_delta', text: u.content.text });
-      } else if (kind === 'agent_thought_chunk' && u.content?.text) {
-        broadcastStream(conversationId, { type: 'thought_delta', text: u.content.text });
       } else if (kind === 'html_content' && u.content?.html) {
         blocks.push({ type: 'html', html: u.content.html, title: u.content.title, id: u.content.id });
-        broadcastStream(conversationId, { type: 'html_section', html: u.content.html, title: u.content.title, id: u.content.id });
       } else if (kind === 'image_content' && u.content?.path) {
         const imageUrl = BASE_URL + '/api/image/' + encodeURIComponent(u.content.path);
         blocks.push({ type: 'image', path: u.content.path, url: imageUrl, title: u.content.title, alt: u.content.alt });
-        broadcastStream(conversationId, { type: 'image_section', url: imageUrl, path: u.content.path, title: u.content.title, alt: u.content.alt });
-      } else if (kind === 'tool_call') {
-        broadcastStream(conversationId, { type: 'tool_call', toolCallId: u.toolCallId, title: u.title, kind: u.kind, status: u.status, content: u.content, locations: u.locations });
-      } else if (kind === 'tool_call_update') {
-        broadcastStream(conversationId, { type: 'tool_update', toolCallId: u.toolCallId, title: u.title, status: u.status, content: u.content });
-      } else if (kind === 'plan') {
-        broadcastStream(conversationId, { type: 'plan', entries: u.entries });
       }
     };
 
@@ -335,21 +323,18 @@ async function processMessage(conversationId, messageId, sessionId, content, age
     queries.createEvent('session.completed', { messageId: assistantMessage.id }, conversationId, sessionId);
 
     broadcastSync({ type: 'session_updated', sessionId, status: 'completed', message: assistantMessage });
-    broadcastStream(conversationId, { type: 'done', stopReason: result?.stopReason || 'end_turn' });
   } catch (e) {
     console.error('processMessage error:', e.message);
     queries.createMessage(conversationId, 'assistant', `Error: ${e.message}`);
     queries.updateSession(sessionId, { status: 'error', error: e.message, completed_at: Date.now() });
     queries.createEvent('session.error', { error: e.message }, conversationId, sessionId);
     broadcastSync({ type: 'session_updated', sessionId, status: 'error', error: e.message });
-    broadcastStream(conversationId, { type: 'error', message: e.message });
     acpPool.delete(agentId || 'claude-code');
   }
 }
 
 const wss = new WebSocketServer({ server });
 const hotReloadClients = [];
-const streamClients = new Map();
 const syncClients = new Set();
 
 wss.on('connection', (ws, req) => {
@@ -358,15 +343,6 @@ wss.on('connection', (ws, req) => {
   if (wsPath === '/hot-reload') {
     hotReloadClients.push(ws);
     ws.on('close', () => { const i = hotReloadClients.indexOf(ws); if (i > -1) hotReloadClients.splice(i, 1); });
-  } else if (wsPath === '/stream') {
-    const convId = url.searchParams.get('conversationId');
-    if (!convId) { ws.close(); return; }
-    if (!streamClients.has(convId)) streamClients.set(convId, new Set());
-    streamClients.get(convId).add(ws);
-    ws.on('close', () => {
-      const set = streamClients.get(convId);
-      if (set) { set.delete(ws); if (set.size === 0) streamClients.delete(convId); }
-    });
   } else if (wsPath === '/sync') {
     syncClients.add(ws);
     ws.isAlive = true;
@@ -375,15 +351,6 @@ wss.on('connection', (ws, req) => {
     ws.on('close', () => { syncClients.delete(ws); });
   }
 });
-
-function broadcastStream(conversationId, event) {
-  const set = streamClients.get(conversationId);
-  if (!set) return;
-  const data = JSON.stringify(event);
-  for (const ws of set) {
-    if (ws.readyState === 1) ws.send(data);
-  }
-}
 
 function broadcastSync(event) {
   const data = JSON.stringify(event);
