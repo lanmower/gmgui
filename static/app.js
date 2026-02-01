@@ -47,6 +47,12 @@ class GMGUIApp {
     if (screenshotFormat) screenshotFormat.value = this.settings.screenshotFormat;
   }
 
+  expandHome(path) {
+    if (!path) return path;
+    const home = localStorage.getItem('gmgui-home') || '/root';
+    return path.startsWith('~') ? path.replace('~', home) : path;
+  }
+
   setupEventListeners() {
     const messageInput = document.getElementById('messageInput');
     if (messageInput) {
@@ -772,9 +778,9 @@ class GMGUIApp {
     if (!modal) return;
 
     const pathInput = document.getElementById('folderPath');
-    pathInput.value = '/home';
+    pathInput.value = '~/';
 
-    this.loadFolderContents('/home');
+    this.loadFolderContents(this.expandHome('~/'));
     modal.classList.add('active');
   }
 
@@ -974,8 +980,8 @@ function closeFolderBrowser() {
 
 function browseFolders() {
   const pathInput = document.getElementById('folderPath');
-  const path = pathInput.value.trim() || '/home';
-  const expandedPath = path.startsWith('~') ? path.replace('~', '/root') : path;
+  const path = pathInput.value.trim() || '~/';
+  const expandedPath = app.expandHome(path);
   app.loadFolderContents(expandedPath);
 }
 
@@ -988,7 +994,7 @@ function confirmFolderSelection() {
     return;
   }
 
-  const expandedPath = path.startsWith('~') ? path.replace('~', '/root') : path;
+  const expandedPath = app.expandHome(path);
   app.startNewChat(expandedPath);
   app.closeFolderBrowser();
 }

@@ -20,20 +20,18 @@ export class ACPLauncher extends EventEmitter {
         const stdio = agent === 'opencode' ? ['pipe', 'pipe', 'inherit'] : ['pipe', 'pipe', 'inherit'];
 
         try {
+          const env = {
+            ...process.env,
+            CLAUDE: process.env.CLAUDE || `${process.env.HOME || '/config'}/.claude`,
+          };
           this.process = agent === 'opencode'
             ? spawn('opencode', ['acp'], {
                 stdio,
-                env: {
-                  ...process.env,
-                  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-                },
+                env,
               })
             : spawn(agentPath, args, {
                 stdio,
-                env: {
-                  ...process.env,
-                  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-                },
+                env,
               });
         } catch (spawnErr) {
           console.error(`Failed to spawn ACP process: ${spawnErr.message}`);
@@ -115,8 +113,9 @@ export class ACPLauncher extends EventEmitter {
         id: 1,
         method: 'initialize',
         params: {
+          protocolVersion: 1,
           clientCapabilities: {
-            fs: true,
+            fs: {},
             terminal: true,
           },
         },
@@ -129,8 +128,8 @@ export class ACPLauncher extends EventEmitter {
   async createSession(cwd, sessionId) {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('ACP newSession timeout'));
-      }, 5000);
+        reject(new Error('ACP session/new timeout'));
+      }, 30000);
 
       const handleMessage = (msg) => {
         if (msg.result?.sessionId === sessionId) {
@@ -146,7 +145,7 @@ export class ACPLauncher extends EventEmitter {
       const newSessionRequest = {
         jsonrpc: '2.0',
         id: 2,
-        method: 'newSession',
+        method: 'session/new',
         params: {
           cwd,
           mcpServers: [],
@@ -160,16 +159,18 @@ export class ACPLauncher extends EventEmitter {
   async sendPrompt(sessionId, messages, systemPrompt = null) {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('ACP prompt timeout'));
+        reject(new Error('ACP session/prompt timeout'));
       }, 300000);
 
       const responses = [];
       const handleMessage = (msg) => {
-        if (msg.method === 'sessionUpdate' && msg.params?.sessionId === sessionId) {
+        // Collect session updates (streaming notifications)
+        if (msg.method === 'session/update' && msg.params?.sessionId === sessionId) {
           responses.push(msg.params);
         }
 
-        if (msg.result?.stopReason) {
+        // Check for prompt response with stop reason
+        if (msg.id === 3 && msg.result?.stopReason) {
           clearTimeout(timeout);
           this.removeListener('message', handleMessage);
           resolve({
@@ -181,17 +182,24 @@ export class ACPLauncher extends EventEmitter {
 
       this.on('message', handleMessage);
 
+      // Convert messages to ACP content blocks (last user message)
+      const lastUserMessage = messages.filter(m => m.role === 'user').pop();
+      const prompt = lastUserMessage ? [
+        {
+          type: 'text',
+          text: typeof lastUserMessage.content === 'string'
+            ? lastUserMessage.content
+            : lastUserMessage.content[0]?.text || ''
+        }
+      ] : [];
+
       const promptRequest = {
         jsonrpc: '2.0',
         id: 3,
-        method: 'prompt',
+        method: 'session/prompt',
         params: {
           sessionId,
-          messages: messages.map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
-          systemPrompt,
+          prompt,
         },
       };
 
