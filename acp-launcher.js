@@ -155,6 +155,50 @@ export default class ACPConnection {
     return this.sendRequest('session/set_mode', { sessionId: this.sessionId, modeId });
   }
 
+  async injectSkills(skills) {
+    const skillDescriptions = {
+      'html_rendering': {
+        name: 'HTML Rendering',
+        description: 'Render custom HTML sections in the chat interface',
+        capability: 'Send sessionUpdate with type:html_content to display HTML'
+      },
+      'image_display': {
+        name: 'Image Display',
+        description: 'Display images from the filesystem in the chat',
+        capability: 'Send sessionUpdate with type:image_content with path to image'
+      },
+      'scrot': {
+        name: 'Screenshot Utility',
+        description: 'Capture screenshots of the desktop or specific windows',
+        capability: 'Use scrot command-line tool to capture and save images'
+      },
+      'fs_access': {
+        name: 'Filesystem Access',
+        description: 'Read and write files, browse directories',
+        capability: 'Full read/write access to user home directory and workspace'
+      }
+    };
+
+    const skillsToInject = skills
+      .map(s => skillDescriptions[s])
+      .filter(Boolean);
+
+    if (skillsToInject.length === 0) return;
+
+    const prompt = [
+      {
+        type: 'text',
+        text: `You have the following skills available:\n\n${skillsToInject.map(s => `• ${s.name}: ${s.description}\n  Capability: ${s.capability}`).join('\n\n')}\n\nYou can use these skills in your responses.`
+      }
+    ];
+
+    return this.sendRequest('session/skill_inject', {
+      sessionId: this.sessionId,
+      skills: skillsToInject,
+      notification: prompt
+    }).catch(() => null);
+  }
+
   async sendPrompt(prompt) {
     const promptContent = Array.isArray(prompt) ? prompt : [{ type: 'text', text: prompt }];
     return this.sendRequest('session/prompt', { sessionId: this.sessionId, prompt: promptContent }, 300000);

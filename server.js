@@ -29,6 +29,7 @@ async function getACP(agentId, cwd) {
   await conn.initialize();
   await conn.newSession(cwd);
   await conn.setSessionMode('bypassPermissions');
+  await conn.injectSkills(['html_rendering', 'image_display', 'scrot', 'fs_access']);
   acpPool.set(agentId, conn);
   console.log(`ACP connection ready for ${agentId} in ${cwd}`);
   return conn;
