@@ -392,14 +392,28 @@ class GMGUIApp {
       });
 
       if (response.ok) {
-        const agentMsg = {
-          role: 'assistant',
-          content: `Response from ${this.selectedAgent}`,
-          timestamp: Date.now(),
-        };
-        conversation.messages.push(agentMsg);
-        this.addMessageToDisplay(agentMsg);
-        this.saveConversations();
+        const data = await response.json();
+        
+        if (this.selectedAgent === 'code' && data.response) {
+          const responseText = this.extractACPResponse(data.response);
+          const agentMsg = {
+            role: 'assistant',
+            content: responseText || `Claude Code processed your request in ${payload.folderContext?.path || 'current directory'}`,
+            timestamp: Date.now(),
+          };
+          conversation.messages.push(agentMsg);
+          this.addMessageToDisplay(agentMsg);
+          this.saveConversations();
+        } else {
+          const agentMsg = {
+            role: 'assistant',
+            content: `Response from ${this.selectedAgent}`,
+            timestamp: Date.now(),
+          };
+          conversation.messages.push(agentMsg);
+          this.addMessageToDisplay(agentMsg);
+          this.saveConversations();
+        }
 
         if (this.settings.autoScroll) {
           const messagesDiv = document.getElementById('chatMessages');
@@ -692,6 +706,32 @@ class GMGUIApp {
 
       list.appendChild(item);
     });
+  }
+
+  extractACPResponse(response) {
+    if (!response) return '';
+    
+    let text = '';
+    
+    if (response.updates && Array.isArray(response.updates)) {
+      for (const update of response.updates) {
+        if (update.textDelta) {
+          text += update.textDelta;
+        } else if (update.content && typeof update.content === 'string') {
+          text += update.content;
+        }
+      }
+    }
+    
+    if (response.stopReason) {
+      if (text) {
+        text += `\n\n[Completed: ${response.stopReason}]`;
+      } else {
+        text = `Operation completed: ${response.stopReason}`;
+      }
+    }
+    
+    return text.trim();
   }
 }
 

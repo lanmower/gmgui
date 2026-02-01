@@ -4,9 +4,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import { pack, unpack } from 'msgpackr';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
+import ACPLauncher from './acp-launcher.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -95,6 +96,92 @@ class AgentManager {
 }
 
 const agentManager = new AgentManager();
+
+// ACP Session Manager for Claude Code
+class ACPSessionManager {
+  constructor() {
+    this.sessions = new Map();
+    this.launchers = new Map();
+  }
+
+  async createSession(agentId, cwd) {
+    const sessionId = `acp-${agentId}-${Date.now()}`;
+    
+    try {
+      let launcher = this.launchers.get(agentId);
+      
+      if (!launcher || !launcher.isRunning()) {
+        launcher = new ACPLauncher();
+        await launcher.launch('claude-code-acp');
+        await launcher.initialize();
+        this.launchers.set(agentId, launcher);
+      }
+
+      const sessionInfo = await launcher.createSession(cwd, sessionId);
+      
+      this.sessions.set(sessionId, {
+        agentId,
+        cwd,
+        sessionId,
+        launcher,
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+      });
+
+      return { sessionId, ...sessionInfo };
+    } catch (err) {
+      console.error(`Failed to create ACP session: ${err.message}`);
+      throw err;
+    }
+  }
+
+  async sendPrompt(sessionId, messages) {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+
+    try {
+      const result = await session.launcher.sendPrompt(sessionId, messages);
+      session.lastActivity = Date.now();
+      return result;
+    } catch (err) {
+      console.error(`Failed to send prompt to ACP: ${err.message}`);
+      throw err;
+    }
+  }
+
+  getSession(sessionId) {
+    return this.sessions.get(sessionId);
+  }
+
+  async closeSession(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      this.sessions.delete(sessionId);
+      const remainingSessions = Array.from(this.sessions.values())
+        .filter(s => s.agentId === session.agentId);
+      
+      if (remainingSessions.length === 0) {
+        const launcher = this.launchers.get(session.agentId);
+        if (launcher) {
+          await launcher.terminate();
+          this.launchers.delete(session.agentId);
+        }
+      }
+    }
+  }
+
+  async cleanup() {
+    for (const launcher of this.launchers.values()) {
+      await launcher.terminate();
+    }
+    this.launchers.clear();
+    this.sessions.clear();
+  }
+}
+
+const acpSessionManager = new ACPSessionManager();
 
 // Agent Auto-Discovery Service
 class AgentDiscoveryService {
@@ -477,11 +564,43 @@ const server = http.createServer((req, res) => {
     const agentId = req.url.split('/')[3];
     let body = '';
     req.on('data', chunk => body += chunk);
-    req.on('end', () => {
+    req.on('end', async () => {
       try {
         const payload = JSON.parse(body);
         const agent = agentManager.getAgent(agentId);
-        if (agent && agent.ws) {
+
+        if (agentId === 'code' || agent?.type === 'acp') {
+          if (payload.folderContext?.path) {
+            const sessionResult = await acpSessionManager.createSession(
+              agentId,
+              payload.folderContext.path
+            );
+
+            const messages = [
+              {
+                role: 'user',
+                content: payload.content,
+              },
+            ];
+
+            const promptResult = await acpSessionManager.sendPrompt(
+              sessionResult.sessionId,
+              messages
+            );
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              success: true,
+              sessionId: sessionResult.sessionId,
+              response: promptResult,
+            }));
+          } else {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              error: 'Claude Code ACP requires folderContext.path',
+            }));
+          }
+        } else if (agent && agent.ws) {
           agent.ws.send(pack(payload));
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: true }));
@@ -784,9 +903,10 @@ if (watch) {
 }
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('Shutting down gracefully...');
   discoveryService.stopMonitoring();
+  await acpSessionManager.cleanup();
   wss.close(() => {
     server.close(() => {
       process.exit(0);
