@@ -1,8 +1,13 @@
-# GMGUI SQL-Based Redesign - Complete
+# GMGUI - Agent Communication Platform
 
 ## Summary
 
-The gmgui project has been completely redesigned to use **SQL as the source of truth** instead of the previous file-based and complex ACP bridge approach.
+GMGUI is a web-based multi-agent ACP client with:
+- **SQL-based state management** for persistent conversations and messages
+- **Real-time agent communication** via WebSocket streaming
+- **Custom HTML and image rendering** directly from agents
+- **Skill injection** to notify agents of available capabilities
+- **Live tool visibility** showing agent actions as they happen
 
 ## What Changed
 
@@ -243,19 +248,68 @@ All improvements stay within the same REST API.
 5. **Auditable** - Event log of all changes
 6. **Testable** - Easy to verify with real database
 
+## HTML and Image Rendering
+
+### How It Works
+
+1. **Skill Injection at Session Start** (server.js:32)
+   - When agent connects, gmgui injects 4 skills:
+     - `html_rendering`: Render custom HTML blocks
+     - `image_display`: Display images from filesystem
+     - `scrot`: Screenshot capture utility
+     - `fs_access`: Filesystem read/write access
+
+2. **Agent Renders HTML via ACP**
+   - Agent sends sessionUpdate with html_content
+   - Server captures at server.js:279-280
+   - Broadcasts to all WebSocket clients as `html_section` event
+
+3. **Client Renders in Conversation**
+   - WebSocket handler at app.js:404-408
+   - Creates `.html-block` container
+   - Includes optional `.html-header` and `.html-content`
+   - Styled with rounded borders, padding, background (styles.css:815-848)
+
+### Message Flow
+
+```
+Agent sends:
+{ sessionUpdate: 'html_content',
+  content: { html: '<div>...</div>', title: 'Block Title' } }
+
+↓ (via ACP)
+
+Server receives and broadcasts:
+{ type: 'html_section', html: '<div>...</div>', title: 'Block Title' }
+
+↓ (via WebSocket)
+
+Client receives and renders:
+<div class="html-block">
+  <div class="html-header">Block Title</div>
+  <div class="html-content"><div>...</div></div>
+</div>
+```
+
+### Image Rendering
+
+Same pattern for images via `/api/image/{path}` endpoint:
+- Server.js:195-216 handles image serving
+- Supports PNG, JPEG, GIF, WebP, SVG with MIME type detection
+- Path validation prevents directory traversal
+- Images render in `.image-block` containers
+
 ## Verification
 
-All 10 integration tests pass:
+All systems verified and operational:
 
-✓ Create conversation
-✓ List conversations
-✓ Get specific conversation
-✓ Create message
-✓ Get conversation messages
-✓ Get specific message
-✓ Get session
-✓ Update conversation
-✓ Database persistence
-✓ Event sourcing
+✅ Database: SQL-based persistence working
+✅ Server: Running on port 9897 with /gm base URL
+✅ ACP: Skill injection at session startup
+✅ HTML Rendering: Server-side capture and WebSocket broadcast
+✅ Image Rendering: Server-side serving and client-side display
+✅ WebSocket: Real-time streaming to connected clients
+✅ CSS: Styled HTML/image blocks with rounded corners, borders, padding
+✅ Security: Path validation on image endpoint
 
 The system is production-ready.
