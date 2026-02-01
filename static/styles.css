@@ -817,6 +817,7 @@ html, body {
   border-radius: 0.5rem;
   overflow: hidden;
   background: var(--bg-secondary);
+  max-width: 70%;
 }
 
 .html-header {
@@ -852,6 +853,7 @@ html, body {
   border-radius: 0.5rem;
   overflow: hidden;
   background: var(--bg-secondary);
+  max-width: 70%;
 }
 
 .image-header {
