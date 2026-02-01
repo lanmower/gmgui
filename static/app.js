@@ -141,7 +141,20 @@ class GMGUIApp {
   selectAgent(id) {
     this.selectedAgent = id;
     this.renderAgentCards();
-    this.logMessage('system', `Selected agent: ${id}`);
+
+    // Hide welcome section and show ready state
+    const welcomeSection = document.querySelector('.welcome-section');
+    if (welcomeSection) {
+      welcomeSection.style.display = 'none';
+    }
+
+    // Ensure chat input is visible and focused
+    const messageInput = document.getElementById('messageInput');
+    if (messageInput) {
+      messageInput.focus();
+    }
+
+    this.logMessage('system', `Selected agent: ${id}. Ready to chat!`);
   }
 
   loadConversations() {
@@ -275,11 +288,14 @@ class GMGUIApp {
   displayConversation(id) {
     this.currentConversation = id;
     const conversation = this.conversations.get(id);
-    
+
     if (!conversation) return;
 
     const messagesDiv = document.getElementById('chatMessages');
     if (!messagesDiv) return;
+
+    // Reset selected agent when switching conversations
+    this.selectedAgent = null;
 
     let headerHtml = '';
     if (conversation.folderPath) {
