@@ -188,15 +188,24 @@ export default class ACPConnection {
     const prompt = [
       {
         type: 'text',
-        text: `IMPORTANT: When displaying HTML or images, use the special rendering format, not markdown code blocks.
+        text: `CRITICAL: HTML Rendering Requirements
 
-For HTML rendering: Send a sessionUpdate message as JSON:
-{"sessionUpdate": "html_content", "content": {"html": "<div style='background:#3498db;color:white;padding:20px;border-radius:8px'>Example</div>"}}
+When rendering HTML, ALWAYS use RippleUI CSS classes for styling and compatibility with the interface:
+- Use RippleUI color classes: bg-primary, bg-secondary, text-primary, text-secondary, border-color
+- Use RippleUI utility classes: p-*, m-*, gap-*, rounded-*
+- Use RippleUI component classes: btn, card, badge, etc.
+- Use inline styles ONLY for dynamic colors or values
 
-For image display: Send a sessionUpdate message as JSON:
+Example RippleUI compatible HTML:
+{"sessionUpdate": "html_content", "content": {"html": "<div class='bg-secondary border-color rounded-lg p-6'><h3 class='text-primary'>Title</h3><p class='text-secondary'>Content</p></div>"}}
+
+Fallback (if using inline styles only):
+{"sessionUpdate": "html_content", "content": {"html": "<div style='background:#f9fafb;border:1px solid #e5e7eb;padding:24px;border-radius:8px'><h3>Title</h3><p>Content</p></div>"}}
+
+RippleUI CSS file: rippleui.css is already loaded in the page.
+
+For image display:
 {"sessionUpdate": "image_content", "content": {"path": "/path/to/image.png"}}
-
-These sessionUpdate messages will render as styled blocks in the chat, not as text.
 
 Available skills: ${skillsToInject.map(s => s.name).join(', ')}`
       }
