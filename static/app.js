@@ -1,9 +1,10 @@
-// Multi-agent ACP client with WebSocket + MessagePack
+// Multi-agent ACP client with chat history
 class GMGUIApp {
   constructor() {
     this.agents = new Map();
     this.selectedAgent = null;
-    this.messageHistory = [];
+    this.conversations = new Map();
+    this.currentConversation = null;
     this.connections = new Map();
     this.settings = {
       messageFormat: 'msgpackr',
@@ -11,7 +12,6 @@ class GMGUIApp {
       connectTimeout: 30000,
       screenshotFormat: 'png',
     };
-    this.uploadedFiles = [];
     this.lastScreenshot = null;
 
     this.init();
@@ -21,7 +21,8 @@ class GMGUIApp {
     this.loadSettings();
     this.setupEventListeners();
     this.fetchAgents();
-    this.setupWebSocketListener();
+    this.loadConversations();
+    this.renderAgentCards();
   }
 
   loadSettings() {
@@ -49,7 +50,6 @@ class GMGUIApp {
   }
 
   setupEventListeners() {
-    // Message input
     const messageInput = document.getElementById('messageInput');
     if (messageInput) {
       messageInput.addEventListener('keydown', (e) => {
@@ -58,25 +58,28 @@ class GMGUIApp {
           this.sendMessage();
         }
       });
+      
+      messageInput.addEventListener('input', () => {
+        this.updateSendButtonState();
+      });
     }
 
-    // Settings changes
-    document.getElementById('messageFormat').addEventListener('change', (e) => {
+    document.getElementById('messageFormat')?.addEventListener('change', (e) => {
       this.settings.messageFormat = e.target.value;
       this.saveSettings();
     });
 
-    document.getElementById('autoScroll').addEventListener('change', (e) => {
+    document.getElementById('autoScroll')?.addEventListener('change', (e) => {
       this.settings.autoScroll = e.target.checked;
       this.saveSettings();
     });
 
-    document.getElementById('connectTimeout').addEventListener('change', (e) => {
+    document.getElementById('connectTimeout')?.addEventListener('change', (e) => {
       this.settings.connectTimeout = parseInt(e.target.value) * 1000;
       this.saveSettings();
     });
 
-    document.getElementById('screenshotFormat').addEventListener('change', (e) => {
+    document.getElementById('screenshotFormat')?.addEventListener('change', (e) => {
       this.settings.screenshotFormat = e.target.value;
       this.saveSettings();
     });
@@ -91,188 +94,190 @@ class GMGUIApp {
         data.agents.forEach(agent => {
           this.agents.set(agent.id, agent);
         });
-        this.renderAgentsList();
+        this.renderAgentCards();
       }
     } catch (error) {
-      this.logMessage('error', 'Failed to fetch agents list', error.message);
+      console.error('Failed to fetch agents:', error);
     }
   }
 
-  renderAgentsList() {
-    const list = document.getElementById('agentsList');
-    if (!list) return;
+  renderAgentCards() {
+    const container = document.getElementById('agentCards');
+    if (!container) return;
 
-    list.innerHTML = '';
+    container.innerHTML = '';
 
     if (this.agents.size === 0) {
-      list.innerHTML = '<p style="color: #9ca3af; font-size: 0.875rem; padding: 1rem; text-align: center;">No agents found</p>';
+      container.innerHTML = '<p style="color: var(--text-tertiary); font-size: 0.875rem;">No agents available</p>';
       return;
     }
 
+    let firstAgent = true;
     this.agents.forEach((agent, id) => {
-      const item = document.createElement('div');
-      item.className = `agent-item ${this.selectedAgent === id ? 'active' : ''}`;
+      const card = document.createElement('button');
+      card.className = `agent-card ${this.selectedAgent === id ? 'active' : ''}`;
+      card.onclick = () => this.selectAgent(id);
 
-      const statusClass = agent.status === 'connected' ? 'connected' : (agent.type === 'cli' ? 'available' : 'disconnected');
-      const statusText = agent.type === 'cli' ? 'available' : (agent.status || 'disconnected');
       const icon = agent.icon || '🤖';
-      const displayName = agent.name || agent.id;
+      const displayName = agent.name || id;
 
-      item.innerHTML = `
-        <div class="agent-item-header">
-          <span class="agent-icon">${icon}</span>
-          <span class="agent-id">${escapeHtml(displayName)}</span>
-          <span class="agent-status ${statusClass}">${statusText}</span>
-        </div>
-        <div class="agent-type">${agent.type === 'cli' ? 'CLI Agent' : 'WebSocket Agent'}</div>
-        ${agent.endpoint ? `<div class="agent-endpoint">${escapeHtml(agent.endpoint)}</div>` : ''}
-        <div class="agent-actions">
-          ${agent.type === 'cli' ? `<button onclick="app.launchCLIAgent('${escapeHtml(agent.id)}')">Launch</button>` : `<button onclick="app.selectAgent('${escapeHtml(agent.id)}')">Select</button>`}
-          <button onclick="app.disconnectAgent('${escapeHtml(agent.id)}')">Remove</button>
-        </div>
+      card.innerHTML = `
+        <span class="agent-card-icon">${icon}</span>
+        <span class="agent-card-name">${escapeHtml(displayName)}</span>
       `;
 
-      list.appendChild(item);
+      container.appendChild(card);
+
+      if (!firstAgent) {
+        const sep = document.createElement('span');
+        sep.className = 'agent-separator';
+        sep.textContent = '|';
+        container.insertBefore(sep, card);
+      }
+      firstAgent = false;
     });
   }
 
   selectAgent(id) {
     this.selectedAgent = id;
-    this.renderAgentsList();
-    const agent = this.agents.get(id);
-    const chatTitle = document.getElementById('chatTitle');
-    if (chatTitle) {
-      chatTitle.textContent = `Chat with ${escapeHtml(id)}`;
-    }
-    this.logMessage('info', `Selected agent: ${id}`);
+    this.renderAgentCards();
+    this.logMessage('system', `Selected agent: ${id}`);
   }
 
-  async connectAgent(id, endpoint) {
-    try {
-      this.logMessage('info', `Connecting to ${id}...`);
-
-      const wsUrl = `ws://${window.location.host}/agent/${id}`;
-      const ws = new WebSocket(wsUrl);
-
-      ws.binaryType = 'arraybuffer';
-
-      const timeout = setTimeout(() => {
-        ws.close();
-        this.logMessage('error', `Connection timeout for ${id}`);
-      }, this.settings.connectTimeout);
-
-      ws.onopen = () => {
-        clearTimeout(timeout);
-        this.connections.set(id, ws);
-        const agent = this.agents.get(id) || { id, endpoint, status: 'connected' };
-        agent.status = 'connected';
-        this.agents.set(id, agent);
-        this.renderAgentsList();
-        this.logMessage('success', `Connected to ${id}`);
-      };
-
-      ws.onmessage = (event) => {
-        this.handleAgentMessage(id, event.data);
-      };
-
-      ws.onerror = (error) => {
-        clearTimeout(timeout);
-        this.logMessage('error', `Connection error for ${id}`, error.message);
-      };
-
-      ws.onclose = () => {
-        clearTimeout(timeout);
-        this.connections.delete(id);
-        const agent = this.agents.get(id);
-        if (agent) {
-          agent.status = 'disconnected';
-        }
-        this.renderAgentsList();
-        this.logMessage('warning', `Disconnected from ${id}`);
-      };
-    } catch (error) {
-      this.logMessage('error', `Failed to connect to ${id}`, error.message);
-    }
-  }
-
-  handleAgentMessage(agentId, data) {
-    try {
-      let message;
-
-      if (this.settings.messageFormat === 'msgpackr') {
-        message = `[Binary Data from ${agentId}]`;
-      } else {
-        message = typeof data === 'string' ? JSON.parse(data) : data;
-      }
-
-      const agent = this.agents.get(agentId);
-      if (agent) {
-        agent.lastMessage = message;
-        this.agents.set(agentId, agent);
-      }
-
-      this.messageHistory.push({
-        agentId,
-        message,
-        timestamp: Date.now(),
-      });
-
-      this.logMessage('info', `Message from ${agentId}`,
-        typeof message === 'string' ? message : JSON.stringify(message, null, 2)
-      );
-    } catch (error) {
-      this.logMessage('error', `Failed to process message from ${agentId}`, error.message);
-    }
-  }
-
-  setupWebSocketListener() {
-    const wsUrl = `ws://${window.location.host}`;
-    const ws = new WebSocket(wsUrl);
-
-    ws.onmessage = (event) => {
+  loadConversations() {
+    const stored = localStorage.getItem('gmgui-conversations');
+    if (stored) {
       try {
-        const data = JSON.parse(event.data);
-
-        if (data.type === 'agent:connected') {
-          const agent = data.agent;
-          this.agents.set(agent.id, agent);
-          this.renderAgentsList();
-          this.logMessage('success', `Agent connected: ${agent.id}`);
-        } else if (data.type === 'agent:disconnected') {
-          const agent = this.agents.get(data.agentId);
-          if (agent) {
-            agent.status = 'disconnected';
-            this.agents.set(data.agentId, agent);
-          }
-          this.renderAgentsList();
-          this.logMessage('warning', `Agent disconnected: ${data.agentId}`);
-        } else if (data.type === 'agent:message') {
-          this.handleAgentMessage(data.agentId, data);
-        }
+        const data = JSON.parse(stored);
+        this.conversations = new Map(Object.entries(data));
       } catch (e) {
-        console.error('WebSocket message error:', e);
+        console.error('Failed to load conversations:', e);
       }
-    };
+    }
+    this.renderChatHistory();
+  }
 
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+  saveConversations() {
+    const data = Object.fromEntries(this.conversations);
+    localStorage.setItem('gmgui-conversations', JSON.stringify(data));
+  }
+
+  startNewChat() {
+    const id = `chat-${Date.now()}`;
+    const conversation = {
+      id,
+      title: `Chat ${this.conversations.size + 1}`,
+      messages: [],
+      createdAt: new Date().toLocaleString(),
     };
+    this.conversations.set(id, conversation);
+    this.currentConversation = id;
+    this.saveConversations();
+    this.renderChatHistory();
+    this.displayConversation(id);
+  }
+
+  renderChatHistory() {
+    const list = document.getElementById('chatList');
+    if (!list) return;
+
+    list.innerHTML = '';
+
+    if (this.conversations.size === 0) {
+      list.innerHTML = '<p style="color: var(--text-tertiary); font-size: 0.875rem; padding: 0.5rem;">No chats yet</p>';
+      return;
+    }
+
+    const sorted = Array.from(this.conversations.values()).sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+    );
+
+    sorted.forEach(conv => {
+      const item = document.createElement('button');
+      item.className = `chat-item ${this.currentConversation === conv.id ? 'active' : ''}`;
+      item.textContent = conv.title;
+      item.onclick = () => this.displayConversation(conv.id);
+      list.appendChild(item);
+    });
+  }
+
+  displayConversation(id) {
+    this.currentConversation = id;
+    const conversation = this.conversations.get(id);
+    
+    if (!conversation) return;
+
+    const messagesDiv = document.getElementById('chatMessages');
+    if (!messagesDiv) return;
+
+    if (conversation.messages.length === 0) {
+      messagesDiv.innerHTML = `
+        <div class="welcome-section">
+          <h2>Hi, what's your plan for today?</h2>
+          <div class="agent-selection">
+            <div id="agentCards" class="agent-cards"></div>
+          </div>
+        </div>
+      `;
+      this.renderAgentCards();
+    } else {
+      messagesDiv.innerHTML = '';
+      conversation.messages.forEach(msg => {
+        this.addMessageToDisplay(msg);
+      });
+      if (this.settings.autoScroll) {
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      }
+    }
+
+    this.renderChatHistory();
+  }
+
+  addMessageToDisplay(msg) {
+    const messagesDiv = document.getElementById('chatMessages');
+    if (!messagesDiv) return;
+
+    const msgEl = document.createElement('div');
+    msgEl.className = `message ${msg.role}`;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'message-bubble';
+    bubble.textContent = msg.content;
+
+    msgEl.appendChild(bubble);
+    messagesDiv.appendChild(msgEl);
   }
 
   async sendMessage() {
     const input = document.getElementById('messageInput');
     const message = input.value.trim();
 
-    if (!message) return;
-    if (!this.selectedAgent) {
-      this.logMessage('error', 'Please select an agent first');
+    if (!message || !this.selectedAgent || !this.currentConversation) {
+      if (!this.selectedAgent) {
+        this.logMessage('system', 'Please select an agent first');
+      }
       return;
     }
 
     try {
+      const conversation = this.conversations.get(this.currentConversation);
+      if (!conversation) return;
+
+      const userMsg = {
+        role: 'user',
+        content: message,
+        timestamp: Date.now(),
+      };
+
+      conversation.messages.push(userMsg);
+      this.addMessageToDisplay(userMsg);
+      input.value = '';
+      this.updateSendButtonState();
+
       const payload = {
         type: 'message',
         content: message,
+        agentId: this.selectedAgent,
         timestamp: Date.now(),
       };
 
@@ -283,14 +288,49 @@ class GMGUIApp {
       });
 
       if (response.ok) {
-        this.logMessage('info', `You (to ${this.selectedAgent})`, message);
-        input.value = '';
+        const agentMsg = {
+          role: 'assistant',
+          content: `Response from ${this.selectedAgent}`,
+          timestamp: Date.now(),
+        };
+        conversation.messages.push(agentMsg);
+        this.addMessageToDisplay(agentMsg);
+        this.saveConversations();
+
+        if (this.settings.autoScroll) {
+          const messagesDiv = document.getElementById('chatMessages');
+          messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
       } else {
         const error = await response.json();
-        this.logMessage('error', 'Send failed', error.error);
+        const errorMsg = {
+          role: 'system',
+          content: `Error: ${error.error}`,
+          timestamp: Date.now(),
+        };
+        conversation.messages.push(errorMsg);
+        this.addMessageToDisplay(errorMsg);
       }
     } catch (error) {
-      this.logMessage('error', 'Send error', error.message);
+      const errorMsg = {
+        role: 'system',
+        content: `Error: ${error.message}`,
+        timestamp: Date.now(),
+      };
+      const conversation = this.conversations.get(this.currentConversation);
+      if (conversation) {
+        conversation.messages.push(errorMsg);
+        this.addMessageToDisplay(errorMsg);
+      }
+    }
+  }
+
+  updateSendButtonState() {
+    const input = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+    
+    if (sendBtn) {
+      sendBtn.disabled = !input || !input.value.trim();
     }
   }
 
@@ -309,24 +349,16 @@ class GMGUIApp {
         const data = await response.json();
         this.lastScreenshot = data;
         this.showScreenshotModal(data.path);
-        this.logMessage('success', 'Screenshot captured', '', [{
-          type: 'screenshot',
-          path: data.path,
-          filename: data.filename,
-        }]);
+        this.logMessage('system', 'Screenshot captured');
       } else {
         const error = await response.json();
-        this.logMessage('error', 'Screenshot failed', error.error);
+        this.logMessage('system', `Screenshot failed: ${error.error}`);
       }
     } catch (error) {
-      this.logMessage('error', 'Screenshot error', error.message);
+      this.logMessage('system', `Screenshot error: ${error.message}`);
     } finally {
       this.showLoading(false);
     }
-  }
-
-  async regenerateScreenshot() {
-    await this.captureScreenshot();
   }
 
   showScreenshotModal(path) {
@@ -348,7 +380,7 @@ class GMGUIApp {
 
   async sendScreenshot() {
     if (!this.lastScreenshot || !this.selectedAgent) {
-      this.logMessage('error', 'No screenshot or agent selected');
+      this.logMessage('system', 'No screenshot or agent selected');
       return;
     }
 
@@ -357,10 +389,10 @@ class GMGUIApp {
       const payload = {
         type: 'message',
         content: message,
+        agentId: this.selectedAgent,
         attachment: {
           type: 'screenshot',
           path: this.lastScreenshot.path,
-          filename: this.lastScreenshot.filename,
         },
         timestamp: Date.now(),
       };
@@ -372,19 +404,14 @@ class GMGUIApp {
       });
 
       if (response.ok) {
-        const attachments = [{
-          type: 'screenshot',
-          path: this.lastScreenshot.path,
-          filename: this.lastScreenshot.filename,
-        }];
-        this.logMessage('info', `You (to ${this.selectedAgent})`, message, attachments);
+        this.logMessage('system', 'Screenshot sent to agent');
         this.closeScreenshotModal();
       } else {
         const error = await response.json();
-        this.logMessage('error', 'Send failed', error.error);
+        this.logMessage('system', `Send failed: ${error.error}`);
       }
     } catch (error) {
-      this.logMessage('error', 'Send error', error.message);
+      this.logMessage('system', `Send error: ${error.message}`);
     }
   }
 
@@ -423,198 +450,43 @@ class GMGUIApp {
 
       if (response.ok) {
         const data = await response.json();
-        this.uploadedFiles.push(...data.files);
-        this.refreshFileList();
-        this.logMessage('success', `Uploaded ${data.files.length} file(s)`);
+        this.logMessage('system', `Uploaded ${data.files.length} file(s)`);
         input.value = '';
       } else {
         const error = await response.json();
-        this.logMessage('error', 'Upload failed', error.error);
+        this.logMessage('system', `Upload failed: ${error.error}`);
       }
     } catch (error) {
-      this.logMessage('error', 'Upload error', error.message);
+      this.logMessage('system', `Upload error: ${error.message}`);
     } finally {
       this.showLoading(false);
     }
   }
 
-  refreshFileList() {
-    const list = document.getElementById('filesList');
-    if (!list) return;
-
-    if (this.uploadedFiles.length === 0) {
-      list.innerHTML = '<p style="color: #9ca3af; padding: 1rem;">No files uploaded</p>';
-      return;
+  logMessage(type, content) {
+    if (!this.currentConversation) {
+      this.startNewChat();
     }
 
-    list.innerHTML = '';
+    const conversation = this.conversations.get(this.currentConversation);
+    if (!conversation) return;
 
-    this.uploadedFiles.forEach((file, index) => {
-      const item = document.createElement('div');
-      item.className = 'file-item';
+    const msg = {
+      role: type,
+      content,
+      timestamp: Date.now(),
+    };
 
-      const sizeKB = Math.round(file.size / 1024);
-      const date = new Date(file.timestamp).toLocaleString();
-
-      item.innerHTML = `
-        <div class="file-item-name">${escapeHtml(file.filename)}</div>
-        <div class="file-item-info">
-          <div>Size: ${sizeKB} KB</div>
-          <div>Uploaded: ${date}</div>
-        </div>
-        <div class="file-item-actions">
-          <a href="${file.path}" download="${file.filename}">Download</a>
-          <button onclick="app.sendFile(${index})">Send</button>
-        </div>
-      `;
-
-      list.appendChild(item);
-    });
-  }
-
-  async sendFile(index) {
-    if (!this.selectedAgent) {
-      this.logMessage('error', 'Please select an agent first');
-      return;
-    }
-
-    const file = this.uploadedFiles[index];
-
-    try {
-      const message = `Sending file: ${file.filename}`;
-      const payload = {
-        type: 'message',
-        content: message,
-        attachment: {
-          type: 'file',
-          path: file.path,
-          filename: file.filename,
-        },
-        timestamp: Date.now(),
-      };
-
-      const response = await fetch(`/api/agents/${this.selectedAgent}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      if (response.ok) {
-        const attachments = [{
-          type: 'file',
-          path: file.path,
-          filename: file.filename,
-          mime: 'application/octet-stream',
-        }];
-        this.logMessage('info', `You (to ${this.selectedAgent})`, message, attachments);
-      } else {
-        const error = await response.json();
-        this.logMessage('error', 'Send failed', error.error);
-      }
-    } catch (error) {
-      this.logMessage('error', 'Send error', error.message);
-    }
-  }
-
-  async renderContentWithReferences(content, attachments = []) {
-    let html = `<div class="console-text">${escapeHtml(content)}</div>`;
-
-    if (attachments && attachments.length > 0) {
-      html += '<div class="attachments-container">';
-
-      for (const att of attachments) {
-        if (att.type === 'file') {
-          html += this.renderFileReference(att);
-        } else if (att.type === 'screenshot') {
-          html += await this.renderScreenshotReference(att);
-        }
-      }
-
-      html += '</div>';
-    }
-
-    return html;
-  }
-
-  renderFileReference(att) {
-    return `
-      <div class="attachment file-reference">
-        <span class="attachment-icon">📄</span>
-        <div class="attachment-info">
-          <a href="${att.path}" download="${att.filename || 'file'}" class="attachment-name">${escapeHtml(att.filename || 'File')}</a>
-          <div class="attachment-meta">${att.mime || 'application/octet-stream'}</div>
-        </div>
-      </div>
-    `;
-  }
-
-  async renderScreenshotReference(att) {
-    try {
-      const response = await fetch(att.path);
-      if (response.ok) {
-        return `
-          <div class="attachment screenshot-reference">
-            <img src="${att.path}" alt="Screenshot" class="attachment-image" loading="lazy" />
-            <button onclick="app.regenerateScreenshot()" class="btn btn-secondary btn-xs">Regenerate</button>
-          </div>
-        `;
-      }
-    } catch (e) {
-      console.warn(`Failed to load screenshot reference: ${att.path}`);
-    }
-
-    return `
-      <div class="attachment content-unavailable">
-        <span class="attachment-icon">⚠️</span>
-        <div class="attachment-info">
-          <div class="attachment-name">Screenshot unavailable</div>
-          <div class="attachment-meta">File not found: ${escapeHtml(att.path)}</div>
-        </div>
-        <button onclick="app.regenerateScreenshot()" class="btn btn-secondary btn-xs">Regenerate</button>
-      </div>
-    `;
-  }
-
-  async logMessage(type, title, content = '', attachments = []) {
-    const output = document.getElementById('consoleOutput');
-    if (!output) return;
-
-    const msg = document.createElement('div');
-    msg.className = `console-message ${type}`;
-
-    const time = new Date().toLocaleTimeString();
-    const contentHtml = content ? await this.renderContentWithReferences(content, attachments) : '';
-
-    msg.innerHTML = `
-      <div class="console-timestamp">${time}</div>
-      <div><span class="console-agent-id">${escapeHtml(title)}</span></div>
-      ${contentHtml}
-    `;
-
-    output.appendChild(msg);
+    conversation.messages.push(msg);
+    this.addMessageToDisplay(msg);
+    this.saveConversations();
 
     if (this.settings.autoScroll) {
-      output.scrollTop = output.scrollHeight;
+      const messagesDiv = document.getElementById('chatMessages');
+      if (messagesDiv) {
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+      }
     }
-  }
-
-  clearConsole() {
-    const output = document.getElementById('consoleOutput');
-    if (output) {
-      output.innerHTML = '';
-    }
-    this.messageHistory = [];
-  }
-
-  disconnectAgent(id) {
-    const ws = this.connections.get(id);
-    if (ws) {
-      ws.close();
-      this.connections.delete(id);
-    }
-    this.agents.delete(id);
-    this.renderAgentsList();
-    this.logMessage('warning', `Removed agent: ${id}`);
   }
 
   showLoading(show) {
@@ -627,36 +499,6 @@ class GMGUIApp {
       }
     }
   }
-
-  launchCLIAgent(agentId) {
-    const agent = this.agents.get(agentId);
-    if (!agent || agent.type !== 'cli') {
-      this.logMessage('error', 'Invalid CLI agent');
-      return;
-    }
-
-    this.showLoading(true);
-    fetch(`/api/cli-agents/${agentId}/launch`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agentId })
-    })
-      .then(res => {
-        this.showLoading(false);
-        if (res.ok) {
-          this.logMessage('info', `Launching ${agent.name}...`);
-          setTimeout(() => {
-            this.selectAgent(agentId);
-          }, 1000);
-        } else {
-          this.logMessage('error', `Failed to launch ${agent.name}`);
-        }
-      })
-      .catch(err => {
-        this.showLoading(false);
-        this.logMessage('error', `Launch error: ${err.message}`);
-      });
-  }
 }
 
 // Global helper functions
@@ -666,41 +508,37 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-function addAgent() {
-  const id = document.getElementById('agentId').value.trim();
-  const endpoint = document.getElementById('agentEndpoint').value.trim();
-
-  if (!id || !endpoint) {
-    alert('Please enter both Agent ID and Endpoint');
-    return;
-  }
-
-  app.agents.set(id, { id, endpoint, status: 'disconnected' });
-  app.connectAgent(id, endpoint);
-
-  document.getElementById('agentId').value = '';
-  document.getElementById('agentEndpoint').value = '';
+function startNewChat() {
+  app.startNewChat();
 }
 
 function sendMessage() {
   app.sendMessage();
 }
 
-function clearConsole() {
-  if (confirm('Clear all messages?')) {
-    app.clearConsole();
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar) {
+    sidebar.classList.toggle('open');
   }
 }
 
 function switchTab(tabName) {
-  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-
-  const tab = document.getElementById(tabName);
-  const btn = document.querySelector(`[data-tab="${tabName}"]`);
-
-  if (tab) tab.classList.add('active');
-  if (btn) btn.classList.add('active');
+  if (tabName === 'settings') {
+    const panel = document.getElementById('settingsPanel');
+    const mainContent = document.querySelector('.main-content');
+    if (panel && mainContent) {
+      panel.style.display = 'flex';
+      mainContent.style.display = 'none';
+    }
+  } else if (tabName === 'chat') {
+    const panel = document.getElementById('settingsPanel');
+    const mainContent = document.querySelector('.main-content');
+    if (panel && mainContent) {
+      panel.style.display = 'none';
+      mainContent.style.display = 'flex';
+    }
+  }
 }
 
 function captureScreenshot() {
@@ -725,14 +563,6 @@ function triggerFileUpload() {
 
 function handleFileUpload() {
   app.handleFileUpload();
-}
-
-function refreshFileList() {
-  app.refreshFileList();
-}
-
-function launchCLIAgent(agentId) {
-  app.launchCLIAgent(agentId);
 }
 
 // Initialize app
